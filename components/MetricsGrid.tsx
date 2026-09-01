@@ -1,6 +1,7 @@
 'use client';
 
 import { formatMoney, formatPct, plClass } from '@/lib/format';
+import { STARTING_CAPITAL } from '@/lib/types';
 import { usePortfolio } from './PortfolioProvider';
 
 export function MetricsGrid() {
@@ -23,16 +24,30 @@ export function MetricsGrid() {
       ? `${formatMoney(summary.accountPl)} (${formatPct(summary.accountReturnPct)})`
       : 'Loading…';
 
+  // Net Worth vs $100k starting cash; Positions Value follows unrealized P/L
+  const netWorthTone =
+    summary == null
+      ? ''
+      : summary.netWorth >= STARTING_CAPITAL
+        ? 'text-emerald-500'
+        : 'text-red-500';
+  const positionsTone =
+    summary == null || summary.unrealized == null
+      ? ''
+      : summary.unrealized >= 0
+        ? 'text-emerald-500'
+        : 'text-red-500';
+
   return (
     <div className="metrics-grid">
       <article className="metric-card">
         <h3>Net Worth</h3>
-        <p className="metric-value">{netWorth}</p>
+        <p className={`metric-value ${netWorthTone}`}>{netWorth}</p>
         <p className="metric-hint">Cash + positions</p>
       </article>
       <article className="metric-card">
         <h3>Positions value</h3>
-        <p className="metric-value">{marketValueText}</p>
+        <p className={`metric-value ${positionsTone}`}>{marketValueText}</p>
         <p className="metric-hint">Open holdings at mark</p>
       </article>
       <article className="metric-card">

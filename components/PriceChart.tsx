@@ -16,31 +16,16 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { getErrorMessage } from '@/lib/errors';
+import { toUserFacingApiError } from '@/lib/errors';
 import { formatMoney, formatPct } from '@/lib/format';
+import { getChartHistory, type ChartRange } from '@/lib/market';
 import { usePortfolio } from './PortfolioProvider';
-
-type ChartRange = '1d' | '1w' | '1m' | '1y' | 'max';
 
 type ChartPoint = {
   time: number;
   date: string;
   price: number;
 };
-
-type ChartSuccess = {
-  ok: true;
-  symbol: string;
-  range: ChartRange;
-  currency: string;
-  name?: string;
-  points: ChartPoint[];
-  change: number;
-  changePercent: number | null;
-  trendingUp: boolean;
-};
-
-type ChartError = { ok: false; error: string; symbol?: string };
 
 const RANGES: { id: ChartRange; label: string }[] = [
   { id: '1d', label: '1D' },
@@ -110,32 +95,7 @@ export function PriceChart() {
     setError(null);
 
     try {
-      let response: Response;
-      try {
-        response = await fetch(
-          `/api/chart?symbol=${encodeURIComponent(normalized)}&range=${encodeURIComponent(r)}`
-        );
-      } catch {
-        throw new Error(
-          'Could not reach the chart API. Is the Next.js server running?'
-        );
-      }
-
-      let payload: ChartSuccess | ChartError;
-      try {
-        payload = (await response.json()) as ChartSuccess | ChartError;
-      } catch {
-        throw new Error(`Chart request failed (${response.status}). Try again.`);
-      }
-
-      if (!response.ok || !payload.ok) {
-        throw new Error(
-          !payload.ok && payload.error
-            ? payload.error
-            : `Chart request failed (${response.status}). Try again.`
-        );
-      }
-
+      const payload = await getChartHistory(normalized, r);
       setPoints(payload.points);
       setName(payload.name);
       setChange(payload.change);
@@ -148,7 +108,7 @@ export function PriceChart() {
       setName(undefined);
       setChange(null);
       setChangePercent(null);
-      setError(getErrorMessage(err, 'Could not load price history.'));
+      setError(toUserFacingApiError(err, 'Could not load price history.'));
     } finally {
       setLoading(false);
     }

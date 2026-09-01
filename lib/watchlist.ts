@@ -1,3 +1,5 @@
+import { normalizeSymbol } from './symbols';
+
 const STORAGE_KEY = 'paper-trading-watchlist';
 
 export function loadWatchlist(): string[] {
@@ -10,7 +12,7 @@ export function loadWatchlist(): string[] {
     return [
       ...new Set(
         parsed
-          .map((s) => String(s ?? '').trim().toUpperCase())
+          .map((s) => normalizeSymbol(String(s ?? '')))
           .filter(Boolean)
       ),
     ];
@@ -24,9 +26,7 @@ function saveWatchlist(symbols: string[]) {
 }
 
 export function addToWatchlist(symbol: string): string[] {
-  const normalized = String(symbol ?? '')
-    .trim()
-    .toUpperCase();
+  const normalized = normalizeSymbol(symbol);
   if (!normalized) return loadWatchlist();
 
   const list = loadWatchlist();
@@ -38,10 +38,25 @@ export function addToWatchlist(symbol: string): string[] {
 }
 
 export function removeFromWatchlist(symbol: string): string[] {
-  const normalized = String(symbol ?? '')
-    .trim()
-    .toUpperCase();
+  const normalized = normalizeSymbol(symbol);
   const list = loadWatchlist().filter((s) => s !== normalized);
   saveWatchlist(list);
   return list;
+}
+
+export function isOnWatchlist(symbol: string): boolean {
+  const normalized = normalizeSymbol(symbol);
+  return loadWatchlist().includes(normalized);
+}
+
+/** Star toggle: add if missing, remove if present. Returns whether it is now starred. */
+export function toggleWatchlist(symbol: string): boolean {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return false;
+  if (isOnWatchlist(normalized)) {
+    removeFromWatchlist(normalized);
+    return false;
+  }
+  addToWatchlist(normalized);
+  return true;
 }

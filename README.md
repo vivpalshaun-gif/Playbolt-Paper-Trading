@@ -20,7 +20,10 @@ Unauthenticated users see Google sign-in. Custom `app/not-found.tsx` links back 
 - Supabase JS client (`NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`, or `SUPABASE_*` aliases)
 - Google OAuth + profile cash balance (`schema_step1.sql` — new users start at `$100,000.00`; existing balances are not reset)
 - Holdings, transactions, atomic `buy_stock` / `sell_stock` RPCs (`schema_step2.sql`)
+- Limit orders (`schema_step4.sql`) — place buy/sell limits; auto-fill when quotes refresh
 - Yahoo quotes via `GET /api/quote?symbol=AAPL` (optional Finnhub fallback with `FINNHUB_API_KEY`)
+- Global tickers: US ADRs (SONY, TM, BABA, ASML, SHOP) and suffixes (`.T` Japan, `.NS` India, `.L` London). Quotes convert to USD. Invalid / not-found tickers show a clear error — no simulated fake prices.
+- Dashboard: performance breakdown, watchlist favorites + sparklines, trade history
 - Clickable holdings → detail modal with metrics and buy more / sell
 - `schema_step3.sql` — idempotent verify/harden script for transactions RLS
 
@@ -46,6 +49,8 @@ The browser calls `/api/quote`, which fetches Yahoo Finance server-side (no CORS
    - `schema_step1.sql`
    - `schema_step2.sql`
    - Optionally `schema_step3.sql`
+   - **`schema_step4.sql`** (limit orders — required for Market/Limit trading)
 2. Confirm Google OAuth is enabled and the redirect URL includes your local origin (e.g. `http://localhost:3000` — update if you previously only allowed `:5173`)
-3. Sign in, open **Trades** or **Dashboard**, look up a ticker, then buy/sell
+3. Sign in, open **Trades** or **Dashboard**, look up a ticker, then buy/sell (Market or Limit)
 4. Confirm **Portfolio** holdings open a detail modal; cash updates after trades
+5. Pin tickers on **Watchlist** to track live quotes and sparklines

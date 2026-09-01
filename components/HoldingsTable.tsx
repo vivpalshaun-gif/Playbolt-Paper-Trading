@@ -12,6 +12,7 @@ import {
 import type { EnrichedHolding } from '@/lib/types';
 import { HoldingDetailModal } from './HoldingDetailModal';
 import { usePortfolio } from './PortfolioProvider';
+import { SymbolCell } from './SymbolTag';
 
 export function HoldingsTable({
   compact = false,
@@ -94,7 +95,7 @@ export function HoldingsTable({
               const daily = formatDailyChange(item.quote);
               const priceText =
                 typeof item.price === 'number'
-                  ? formatMoney(item.price, item.quote?.currency)
+                  ? formatMoney(item.price, 'USD')
                   : item.priceError
                     ? 'No usable price'
                     : '—';
@@ -114,7 +115,12 @@ export function HoldingsTable({
                   onClick={() => openHolding(item)}
                   onKeyDown={(e) => onRowKeyDown(e, item)}
                 >
-                  <td>{item.symbol}</td>
+                  <td>
+                    <SymbolCell
+                      symbol={item.symbol}
+                      exchange={item.exchange ?? item.quote?.exchange}
+                    />
+                  </td>
                   <td>{formatShares(item.shares)}</td>
                   {!compact ? <td>{formatMoney(item.avgCost)}</td> : null}
                   <td className={item.priceError ? 'cell-error' : ''}>

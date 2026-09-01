@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { getErrorMessage } from '@/lib/errors';
+import { getErrorMessage, toUserFacingApiError } from '@/lib/errors';
 import {
   formatDailyChange,
   formatMoney,
@@ -21,6 +21,7 @@ import {
 import type { EnrichedHolding } from '@/lib/types';
 import { useAuth } from './AuthProvider';
 import { usePortfolio } from './PortfolioProvider';
+import { SymbolCell } from './SymbolTag';
 
 type Props = {
   holding: EnrichedHolding;
@@ -103,9 +104,9 @@ export function HoldingDetailModal({ holding, onClose }: Props) {
       return quote.price;
     } catch (err) {
       throw new Error(
-        getErrorMessage(
+        toUserFacingApiError(
           err,
-          `Live quote unavailable for ${holding.symbol}. Try Refresh quotes, then trade again.`
+          `Live quote unavailable for ${holding.symbol}. Invalid stock ticker or market data is down.`
         )
       );
     }
@@ -176,9 +177,15 @@ export function HoldingDetailModal({ holding, onClose }: Props) {
           <div>
             <p className="modal-kicker muted">Position detail</p>
             <h2 id={titleId} className="modal-title">
-              {holding.symbol}
+              <SymbolCell
+                symbol={holding.symbol}
+                exchange={holding.exchange ?? liveQuote?.exchange}
+              />
               {liveQuote?.name ? (
                 <span className="muted modal-name">{liveQuote.name}</span>
+              ) : null}
+              {liveQuote?.simulated ? (
+                <span className="pill pill-sim">Simulated</span>
               ) : null}
             </h2>
           </div>
@@ -205,7 +212,7 @@ export function HoldingDetailModal({ holding, onClose }: Props) {
             <dt>Current price</dt>
             <dd>
               {livePrice != null
-                ? formatMoney(livePrice, liveQuote?.currency)
+                ? `${formatMoney(livePrice, 'USD')} USD`
                 : '—'}
             </dd>
           </div>

@@ -21,14 +21,50 @@ const pctFmt = new Intl.NumberFormat('en-US', {
   signDisplay: 'exceptZero',
 });
 
+/** Convert dollars → integer cents (banker's-safe via Math.round). */
+export function toCents(amount: number): number {
+  return Math.round(Number(amount) * 100);
+}
+
+export function fromCents(cents: number): number {
+  return cents / 100;
+}
+
+/** Round to whole cents (e.g. 37713.199999 → 37713.20). */
+export function roundCents(amount: number): number {
+  return fromCents(toCents(amount));
+}
+
+/**
+ * Multiply quantity × unit price in cent space so
+ * 70 * 538.76 === 37713.20 exactly (no float $0.01 drift).
+ */
+export function mulMoney(quantity: number, unitPrice: number): number {
+  const unitCents = toCents(unitPrice);
+  return Math.round(Number(quantity) * unitCents) / 100;
+}
+
+export function addMoney(...amounts: number[]): number {
+  return fromCents(amounts.reduce((sum, a) => sum + toCents(a), 0));
+}
+
+export function subMoney(a: number, b: number): number {
+  return fromCents(toCents(a) - toCents(b));
+}
+
+/** Treat near-zero share dust as closed (no active position). */
+export function isActiveHolding(shares: number): boolean {
+  return Number.isFinite(shares) && shares > 1e-8;
+}
+
 export function formatMoney(amount: number, currency = 'USD') {
   try {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency,
-    }).format(Number(amount));
+    }).format(roundCents(amount));
   } catch {
-    return currencyFmt.format(Number(amount));
+    return currencyFmt.format(roundCents(amount));
   }
 }
 
@@ -60,7 +96,7 @@ export function formatDailyChange(quote: Quote | null | undefined) {
     return { text: '—', cls: '' };
   }
   return {
-    text: `${formatMoney(quote.change, quote.currency)} (${formatPct(quote.changePercent)})`,
+    text: `${formatMoney(quote.change, 'USD')} (${formatPct(quote.changePercent)})`,
     cls: plClass(quote.change),
   };
 }
@@ -70,30 +106,37 @@ export function enrichHoldings(
   quoteMap: Map<string, Quote>,
   failMap: Map<string, string> = new Map()
 ): EnrichedHolding[] {
-  const enriched = holdings.map((row) => {
-    const shares = Number(row.shares);
-    const avgCost = Number(row.avg_cost);
-    const quote = quoteMap.get(row.symbol) ?? null;
-    const price = quote?.price ?? null;
-    const marketValue =
-      typeof price === 'number' ? shares * price : null;
-    const cost = shares * avgCost;
-    const unrealized = marketValue != null ? marketValue - cost : null;
-    const unrealizedPct =
-      unrealized != null && cost > 0 ? (unrealized / cost) * 100 : null;
+  const enriched = holdings
+    .map((row) => {
+      const shares = Number(row.shares);
+      const avgCost = roundCents(Number(row.avg_cost));
+      const quote = quoteMap.get(row.symbol) ?? null;
+      const price =
+        quote && typeof quote.price === 'number'
+          ? roundCents(quote.price)
+          : null;
+      const marketValue =
+        typeof price === 'number' ? mulMoney(shares, price) : null;
+      const cost = mulMoney(shares, avgCost);
+      const unrealized =
+        marketValue != null ? subMoney(marketValue, cost) : null;
+      const unrealizedPct =
+        unrealized != null && cost > 0 ? (unrealized / cost) * 100 : null;
 
-    return {
-      symbol: row.symbol,
-      shares,
-      avgCost,
-      price,
-      marketValue,
-      unrealized,
-      unrealizedPct,
-      quote,
-      priceError: failMap.get(row.symbol),
-    };
-  });
+      return {
+        symbol: row.symbol,
+        shares,
+        avgCost,
+        price,
+        marketValue,
+        unrealized,
+        unrealizedPct,
+        quote,
+        priceError: failMap.get(row.symbol),
+        exchange: quote?.exchange ?? quote?.country,
+      };
+    })
+    .filter((row) => isActiveHolding(row.shares));
 
   return enriched.sort(
     (a, b) => (b.marketValue ?? 0) - (a.marketValue ?? 0)
@@ -105,40 +148,51 @@ export function summarizePortfolio(
   holdings: Holding[],
   quoteMap: Map<string, Quote>
 ) {
-  let costBasis = 0;
-  let marketValue = 0;
+  let costBasisCents = 0;
+  let marketValueCents = 0;
   let missingQuotes = 0;
+
+  const cashRounded = roundCents(cash);
 
   for (const row of holdings) {
     const shares = Number(row.shares);
+    if (!isActiveHolding(shares)) continue;
+
     const avgCost = Number(row.avg_cost);
-    costBasis += shares * avgCost;
+    costBasisCents += toCents(mulMoney(shares, avgCost));
+
     const quote = quoteMap.get(row.symbol);
     if (quote && typeof quote.price === 'number') {
-      marketValue += shares * quote.price;
+      marketValueCents += toCents(mulMoney(shares, quote.price));
     } else {
       missingQuotes += 1;
     }
   }
 
-  const netWorth = cash + marketValue;
-  // Open positions only: mark − remaining cost basis (needs live quotes).
+  const costBasis = fromCents(costBasisCents);
+  const marketValue = fromCents(marketValueCents);
+  const netWorth = addMoney(cashRounded, marketValue);
+
   const unrealized =
-    costBasis > 0 && missingQuotes === 0 ? marketValue - costBasis : null;
+    costBasis > 0 && missingQuotes === 0
+      ? subMoney(marketValue, costBasis)
+      : missingQuotes === 0 && costBasis === 0
+        ? 0
+        : null;
   const unrealizedPct =
     unrealized != null && costBasis > 0
       ? (unrealized / costBasis) * 100
       : null;
-  // Closed-trade P/L locked into cash. Identity (no quotes needed):
-  //   cash + costBasis = STARTING_CAPITAL + realized
-  //   netWorth = STARTING_CAPITAL + realized + unrealized
-  //   (when all holdings are priced)
-  const realized = cash + costBasis - STARTING_CAPITAL;
-  const accountPl = netWorth - STARTING_CAPITAL;
+
+  const realized = subMoney(addMoney(cashRounded, costBasis), STARTING_CAPITAL);
+  const accountPl =
+    unrealized != null
+      ? addMoney(realized, unrealized)
+      : subMoney(netWorth, STARTING_CAPITAL);
   const accountReturnPct = (accountPl / STARTING_CAPITAL) * 100;
 
   return {
-    cash,
+    cash: cashRounded,
     marketValue,
     netWorth,
     costBasis,

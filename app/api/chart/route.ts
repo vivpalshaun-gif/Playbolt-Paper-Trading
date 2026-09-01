@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getErrorMessage } from '@/lib/errors';
+import { fetchUsdRate, toUsd } from '@/lib/fx';
+import { isValidSymbol, normalizeSymbol } from '@/lib/symbols';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -137,7 +139,6 @@ async function fetchYahooHistory(symbol: string, range: ChartRange) {
 
   if (config.useFullHistory) {
     const period2 = Math.floor(Date.now() / 1000);
-    // period1=0 asks Yahoo for the earliest available bars for the symbol
     url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
       symbol
     )}?period1=0&period2=${period2}&interval=${encodeURIComponent(config.interval)}`;
@@ -173,21 +174,30 @@ async function fetchYahooHistory(symbol: string, range: ChartRange) {
   return parseChartPayload(payload, symbol, range);
 }
 
+async function toUsdPoints(
+  points: ChartPoint[],
+  currency: string
+): Promise<ChartPoint[]> {
+  if ((currency || 'USD').toUpperCase() === 'USD') return points;
+  const rate = await fetchUsdRate(currency);
+  return points.map((p) => ({
+    ...p,
+    price: Math.round(toUsd(p.price, currency, rate) * 100) / 100,
+  }));
+}
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const raw = searchParams.get('symbol') ?? '';
-    const symbol = raw.trim().toUpperCase();
+    const symbol = normalizeSymbol(searchParams.get('symbol') ?? '');
     const rangeRaw = (searchParams.get('range') ?? '1m').trim().toLowerCase();
-    const range = (
-      rangeRaw === 'all' ? 'max' : rangeRaw
-    ) as ChartRange;
+    const range = (rangeRaw === 'all' ? 'max' : rangeRaw) as ChartRange;
 
     if (!symbol) {
-      return errorJson('Enter a ticker symbol (e.g. AAPL).', 400);
+      return errorJson('Enter a ticker symbol (e.g. AAPL or 7203.T).', 400);
     }
 
-    if (!/^[A-Z0-9.^_-]{1,12}$/.test(symbol)) {
+    if (!isValidSymbol(symbol)) {
       return errorJson(`Invalid ticker: ${symbol}`, 400, symbol);
     }
 
@@ -200,7 +210,11 @@ export async function GET(request: Request) {
     }
 
     try {
-      const { points, currency, name } = await fetchYahooHistory(symbol, range);
+      const { points: nativePoints, currency, name } = await fetchYahooHistory(
+        symbol,
+        range
+      );
+      const points = await toUsdPoints(nativePoints, currency);
       const first = points[0]?.price ?? 0;
       const last = points[points.length - 1]?.price ?? 0;
       const change = last - first;
@@ -210,17 +224,21 @@ export async function GET(request: Request) {
         ok: true as const,
         symbol,
         range,
-        currency,
+        currency: 'USD',
         name,
         points,
         change,
         changePercent,
         trendingUp: last >= first,
+        simulated: false,
       });
     } catch (err) {
       return errorJson(
-        getErrorMessage(err, `No chart data for ${symbol}.`),
-        502,
+        getErrorMessage(
+          err,
+          'Invalid stock ticker. Please check the symbol and try again.'
+        ),
+        404,
         symbol
       );
     }

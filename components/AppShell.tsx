@@ -17,6 +17,8 @@ export function AppShell({
     refresh,
     profileError,
     portfolioNote,
+    connectionError,
+    usingCachedData,
   } = usePortfolio();
 
   return (
@@ -40,13 +42,34 @@ export function AppShell({
           </div>
         </header>
 
+        {connectionError ? (
+          <div className="connection-banner" role="alert">
+            <div className="connection-banner-body">
+              <p className="connection-banner-title">Connection problem</p>
+              <p className="connection-banner-text">{connectionError}</p>
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={refreshing}
+              onClick={() => {
+                void refresh();
+              }}
+            >
+              {refreshing ? 'Retrying…' : 'Retry'}
+            </button>
+          </div>
+        ) : null}
+
         {profileError ? (
           <p className="error banner-error" role="alert">
             {profileError}
           </p>
         ) : null}
         {portfolioNote ? (
-          <p className="muted portfolio-note">{portfolioNote}</p>
+          <p className={`muted portfolio-note${usingCachedData ? ' portfolio-note-cached' : ''}`}>
+            {portfolioNote}
+          </p>
         ) : null}
 
         {children}

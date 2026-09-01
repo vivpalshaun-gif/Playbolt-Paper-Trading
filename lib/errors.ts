@@ -28,3 +28,24 @@ export function getErrorMessage(
 
   return fallback;
 }
+
+/** Prefer a connection banner message when the failure looks network-related. */
+export function toUserFacingApiError(
+  err: unknown,
+  fallback = 'An error occurred'
+): string {
+  const msg = getErrorMessage(err, fallback);
+  const lower = msg.toLowerCase();
+  if (
+    lower.includes('failed to fetch') ||
+    lower.includes('networkerror') ||
+    lower.includes('econnrefused') ||
+    lower.includes('err_connection_refused') ||
+    lower.includes('could not reach') ||
+    lower.includes('backend is running') ||
+    lower.includes('unable to connect to local server')
+  ) {
+    return 'Unable to connect to local server. Please ensure your backend is running.';
+  }
+  return msg;
+}

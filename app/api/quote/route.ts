@@ -1,5 +1,13 @@
 import { NextResponse } from 'next/server';
 import { getErrorMessage } from '@/lib/errors';
+import { fetchUsdRate, toUsd } from '@/lib/fx';
+import {
+  getCountryTag,
+  getExchangeMeta,
+  isValidSymbol,
+  knownAdrHint,
+  normalizeSymbol,
+} from '@/lib/symbols';
 import type { Quote } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -8,16 +16,81 @@ export const dynamic = 'force-dynamic';
 const YAHOO_UA =
   'Mozilla/5.0 (compatible; PlayboltPaperTrading/0.2; +https://localhost)';
 
-function errorJson(message: string, status = 400, symbol?: string) {
+const INVALID_TICKER =
+  'Invalid stock ticker. Please check the symbol and try again.';
+
+function okQuote(quote: Quote) {
+  return NextResponse.json({ ok: true as const, quote });
+}
+
+function failQuote(message: string, status: number, symbol?: string) {
   return NextResponse.json(
     { ok: false as const, error: message, symbol },
     { status }
   );
 }
 
+async function enrichWithUsd(quote: Quote): Promise<Quote> {
+  const nativeCurrency = (
+    quote.nativeCurrency ||
+    quote.currency ||
+    'USD'
+  ).toUpperCase();
+  const nativePrice = quote.nativePrice ?? quote.price;
+  const exchange = quote.exchange ?? getCountryTag(quote.symbol);
+  const meta = getExchangeMeta(quote.symbol);
+
+  if (nativeCurrency === 'USD') {
+    return {
+      ...quote,
+      price: nativePrice,
+      currency: 'USD',
+      nativePrice,
+      nativeCurrency: 'USD',
+      exchange,
+      country: quote.country ?? exchange,
+      fxRate: 1,
+      simulated: false,
+      name: quote.name || knownAdrHint(quote.symbol) || meta.label,
+    };
+  }
+
+  const rate = await fetchUsdRate(nativeCurrency);
+  const price = Math.round(toUsd(nativePrice, nativeCurrency, rate) * 100) / 100;
+  const previousClose =
+    quote.previousClose != null
+      ? Math.round(toUsd(quote.previousClose, nativeCurrency, rate) * 100) / 100
+      : null;
+  const change =
+    previousClose != null ? price - previousClose : quote.change;
+  const changePercent =
+    previousClose != null && previousClose > 0
+      ? (change! / previousClose) * 100
+      : quote.changePercent;
+
+  return {
+    ...quote,
+    price,
+    currency: 'USD',
+    nativePrice,
+    nativeCurrency,
+    previousClose,
+    change,
+    changePercent,
+    exchange,
+    country: quote.country ?? exchange,
+    fxRate: rate,
+    simulated: false,
+    name: quote.name || knownAdrHint(quote.symbol),
+  };
+}
+
 function parseYahooChart(payload: unknown, normalized: string): Quote {
-  const chart = (payload as { chart?: { result?: unknown[]; error?: { description?: string } } })
-    ?.chart;
+  const chart = (
+    payload as {
+      chart?: { result?: unknown[]; error?: { description?: string } };
+    }
+  )?.chart;
   const result = chart?.result?.[0] as
     | {
         meta?: Record<string, unknown>;
@@ -27,10 +100,7 @@ function parseYahooChart(payload: unknown, normalized: string): Quote {
   const errorDescription = chart?.error?.description;
 
   if (!result) {
-    throw new Error(
-      errorDescription ||
-        `Symbol not found: ${normalized}. Check the ticker and try again.`
-    );
+    throw new Error(errorDescription || INVALID_TICKER);
   }
 
   const meta = result.meta ?? {};
@@ -48,7 +118,7 @@ function parseYahooChart(payload: unknown, normalized: string): Quote {
       : lastClose;
 
   if (typeof price !== 'number' || Number.isNaN(price) || price <= 0) {
-    throw new Error(`No usable price for ${normalized}.`);
+    throw new Error(INVALID_TICKER);
   }
 
   const previousClose =
@@ -67,19 +137,30 @@ function parseYahooChart(payload: unknown, normalized: string): Quote {
     changePercent = (change / previousClose) * 100;
   }
 
+  const currency =
+    typeof meta.currency === 'string' ? meta.currency.toUpperCase() : 'USD';
+  const symbol =
+    typeof meta.symbol === 'string' ? meta.symbol.toUpperCase() : normalized;
+
   return {
-    symbol: typeof meta.symbol === 'string' ? meta.symbol : normalized,
+    symbol,
     price,
-    currency: typeof meta.currency === 'string' ? meta.currency : 'USD',
+    currency,
+    nativePrice: price,
+    nativeCurrency: currency,
     name:
       (typeof meta.longName === 'string' && meta.longName) ||
       (typeof meta.shortName === 'string' && meta.shortName) ||
+      knownAdrHint(normalized) ||
       undefined,
     previousClose,
     change,
     changePercent,
     marketState:
       typeof meta.marketState === 'string' ? meta.marketState : null,
+    exchange: getCountryTag(symbol),
+    country: getCountryTag(symbol),
+    simulated: false,
   };
 }
 
@@ -92,18 +173,21 @@ async function fetchYahooQuote(symbol: string): Promise<Quote> {
       cache: 'no-store',
     });
   } catch {
-    throw new Error(`Could not reach Yahoo Finance for ${symbol}.`);
+    throw new Error(`Could not reach market data for ${symbol}. Try again.`);
   }
 
   if (!response.ok) {
-    throw new Error(`Yahoo quote request failed (${response.status}).`);
+    if (response.status === 404) {
+      throw new Error(INVALID_TICKER);
+    }
+    throw new Error(`Market data request failed (${response.status}).`);
   }
 
   let payload: unknown;
   try {
     payload = await response.json();
   } catch {
-    throw new Error(`Yahoo returned invalid data for ${symbol}.`);
+    throw new Error(INVALID_TICKER);
   }
 
   return parseYahooChart(payload, symbol);
@@ -112,6 +196,7 @@ async function fetchYahooQuote(symbol: string): Promise<Quote> {
 async function fetchFinnhubQuote(symbol: string): Promise<Quote | null> {
   const key = process.env.FINNHUB_API_KEY;
   if (!key) return null;
+  if (symbol.includes('.')) return null;
 
   const quoteUrl = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${key}`;
   const profileUrl = `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(symbol)}&token=${key}`;
@@ -124,12 +209,10 @@ async function fetchFinnhubQuote(symbol: string): Promise<Quote | null> {
       fetch(profileUrl, { cache: 'no-store' }),
     ]);
   } catch {
-    throw new Error(`Could not reach Finnhub for ${symbol}.`);
+    return null;
   }
 
-  if (!quoteRes.ok) {
-    throw new Error(`Finnhub quote request failed (${quoteRes.status}).`);
-  }
+  if (!quoteRes.ok) return null;
 
   let quoteData: { c?: number; pc?: number; d?: number; dp?: number };
   try {
@@ -140,11 +223,11 @@ async function fetchFinnhubQuote(symbol: string): Promise<Quote | null> {
       dp?: number;
     };
   } catch {
-    throw new Error(`Finnhub returned invalid data for ${symbol}.`);
+    return null;
   }
   const price = quoteData.c;
   if (typeof price !== 'number' || Number.isNaN(price) || price <= 0) {
-    throw new Error(`No usable price for ${symbol}.`);
+    return null;
   }
 
   let name: string | undefined;
@@ -153,7 +236,7 @@ async function fetchFinnhubQuote(symbol: string): Promise<Quote | null> {
       const profile = (await profileRes.json()) as { name?: string };
       if (profile.name) name = profile.name;
     } catch {
-      /* ignore profile parse errors */
+      /* ignore */
     }
   }
 
@@ -176,58 +259,66 @@ async function fetchFinnhubQuote(symbol: string): Promise<Quote | null> {
     symbol,
     price,
     currency: 'USD',
-    name,
+    nativePrice: price,
+    nativeCurrency: 'USD',
+    name: name || knownAdrHint(symbol),
     previousClose,
     change,
     changePercent,
     marketState: null,
+    exchange: getCountryTag(symbol),
+    country: getCountryTag(symbol),
+    simulated: false,
   };
 }
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const raw = searchParams.get('symbol') ?? '';
-    const symbol = raw.trim().toUpperCase();
+    const symbol = normalizeSymbol(searchParams.get('symbol') ?? '');
 
     if (!symbol) {
-      return errorJson('Enter a ticker symbol (e.g. AAPL).', 400);
+      return failQuote('Enter a ticker (e.g. AAPL, SONY, 7203.T).', 400);
     }
 
-    if (!/^[A-Z0-9.^_-]{1,12}$/.test(symbol)) {
-      return errorJson(`Invalid ticker: ${symbol}`, 400, symbol);
+    if (!isValidSymbol(symbol)) {
+      return failQuote(INVALID_TICKER, 400, symbol);
     }
 
-    let yahooError: string | null = null;
+    let lastError = INVALID_TICKER;
+
     try {
-      const quote = await fetchYahooQuote(symbol);
-      return NextResponse.json({ ok: true as const, quote });
+      const raw = await fetchYahooQuote(symbol);
+      const quote = await enrichWithUsd(raw);
+      return okQuote(quote);
     } catch (err) {
-      yahooError =
-        err instanceof Error ? err.message : `Yahoo failed for ${symbol}.`;
+      lastError = getErrorMessage(err, INVALID_TICKER);
     }
 
     try {
       const finnhub = await fetchFinnhubQuote(symbol);
       if (finnhub) {
-        return NextResponse.json({ ok: true as const, quote: finnhub });
+        const quote = await enrichWithUsd(finnhub);
+        return okQuote(quote);
       }
     } catch (err) {
-      const finnhubMsg =
-        err instanceof Error ? err.message : 'Finnhub fallback failed.';
-      return errorJson(
-        yahooError
-          ? `${yahooError} Finnhub: ${finnhubMsg}`
-          : finnhubMsg,
-        502,
-        symbol
-      );
+      lastError = getErrorMessage(err, lastError);
     }
 
-    return errorJson(yahooError ?? `No usable price for ${symbol}.`, 404, symbol);
+    // Never invent prices for missing / invalid tickers
+    const status =
+      lastError === INVALID_TICKER ||
+      lastError.toLowerCase().includes('not found') ||
+      lastError.toLowerCase().includes('invalid')
+        ? 404
+        : 502;
+    return failQuote(
+      status === 404 ? INVALID_TICKER : lastError,
+      status,
+      symbol
+    );
   } catch (err) {
-    console.error('Quote API error:', err);
-    return errorJson(
+    return failQuote(
       getErrorMessage(err, 'Unexpected quote service error.'),
       500
     );
